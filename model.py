@@ -37,7 +37,7 @@ warnings.filterwarnings("ignore")
 # CONFIGURATION
 # ============================================================
 
-DATA_PATH = "data/dataset.csv"
+DATA_PATH = "dataset.csv"
 MODEL_PATH = "medbuddy_model.joblib"
 
 TARGET_COLUMN = "disease"
