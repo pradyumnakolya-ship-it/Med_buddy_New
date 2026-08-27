@@ -1,10 +1,3 @@
-"""
-MedBuddy AI - Improved Medical Prediction Model
-
-Educational / research prototype.
-NOT a clinically validated diagnostic system.
-"""
-
 from __future__ import annotations
 
 import os
@@ -14,27 +7,23 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
-    confusion_matrix,
     f1_score,
     precision_score,
     recall_score,
-    roc_auc_score,
 )
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 warnings.filterwarnings("ignore")
 
 
 # ============================================================
-# CONFIGURATION
+# CONFIG
 # ============================================================
 
 DATA_PATH = "dataset.csv"
@@ -45,8 +34,6 @@ TARGET_COLUMN = "disease"
 TEST_SIZE = 0.20
 RANDOM_STATE = 42
 
-# Predictions below this threshold are reported as
-# "Insufficient evidence" rather than forcing a diagnosis.
 CONFIDENCE_THRESHOLD = 0.55
 
 
@@ -54,270 +41,82 @@ CONFIDENCE_THRESHOLD = 0.55
 # LOAD DATASET
 # ============================================================
 
-def load_dataset(
-    data_path: str = DATA_PATH,
-    target_column: str = TARGET_COLUMN,
-):
-    """Load and clean the dataset."""
+def load_dataset():
 
-    if not os.path.exists(data_path):
+    if not os.path.exists(DATA_PATH):
         raise FileNotFoundError(
-            f"Dataset not found: {data_path}"
+            f"Dataset not found: {DATA_PATH}"
         )
 
-    df = pd.read_csv(data_path)
+    df = pd.read_csv(DATA_PATH)
 
-    if df.empty:
-        raise ValueError("Dataset is empty.")
-
-    if target_column not in df.columns:
+    if TARGET_COLUMN not in df.columns:
         raise ValueError(
-            f"Target column '{target_column}' not found.\n"
-            f"Available columns:\n{list(df.columns)}"
+            f"Missing target column: {TARGET_COLUMN}"
         )
 
-    # Remove completely empty columns
-    df = df.dropna(axis=1, how="all")
-
-    # Remove exact duplicate rows
-    duplicate_count = df.duplicated().sum()
-
-    if duplicate_count > 0:
-        df = df.drop_duplicates()
-
-    # Remove rows with missing target
+    # Remove empty rows
     df = df.dropna(
-        subset=[target_column]
+        subset=[TARGET_COLUMN]
     )
 
-    # Normalize disease labels
-    df[target_column] = (
-        df[target_column]
+    # Remove duplicates
+    df = df.drop_duplicates()
+
+    # Clean target
+    df[TARGET_COLUMN] = (
+        df[TARGET_COLUMN]
         .astype(str)
         .str.strip()
     )
 
-    # Remove empty disease labels
-    df = df[
-        df[target_column] != ""
-    ]
-
+    # Features
     X = df.drop(
-        columns=[target_column]
+        columns=[TARGET_COLUMN]
     )
 
-    y = df[target_column]
+    y = df[TARGET_COLUMN]
 
-    if y.nunique() < 2:
-        raise ValueError(
-            "Dataset must contain at least "
-            "two disease classes."
+    # Force symptom columns to numeric
+    for column in X.columns:
+
+        X[column] = pd.to_numeric(
+            X[column],
+            errors="coerce"
         )
 
-    print("\n" + "=" * 60)
-    print("MEDBUDDY AI DATASET")
+    # Replace missing values
+    X = X.fillna(0)
+
+    # Force binary symptom data
+    X = X.astype(float)
+
+    print("=" * 60)
+    print("MEDBUDDY DATASET")
     print("=" * 60)
 
-    print(f"Samples:       {len(df):,}")
-    print(f"Features:      {X.shape[1]:,}")
-    print(f"Diseases:      {y.nunique():,}")
     print(
-        f"Duplicates removed: {duplicate_count}"
+        f"Rows: {len(X)}"
     )
 
-    print("\nDisease distribution:")
     print(
-        y.value_counts().to_string()
+        f"Features: {len(X.columns)}"
+    )
+
+    print(
+        f"Diseases: {y.nunique()}"
     )
 
     return X, y
 
 
 # ============================================================
-# PREPROCESSOR
-# ============================================================
-
-def build_preprocessor(
-    X: pd.DataFrame,
-):
-    """
-    Automatically handles numerical and categorical
-    features.
-
-    Numerical:
-        Median imputation
-        Standard scaling
-
-    Categorical:
-        Most-frequent imputation
-        One-hot encoding
-    """
-
-    numerical_features = (
-        X.select_dtypes(
-            include=[
-                "int64",
-                "int32",
-                "float64",
-                "float32",
-            ]
-        )
-        .columns
-        .tolist()
-    )
-
-    categorical_features = (
-        X.select_dtypes(
-            include=[
-                "object",
-                "category",
-                "bool",
-            ]
-        )
-        .columns
-        .tolist()
-    )
-
-    print("\n" + "=" * 60)
-    print("FEATURE INFORMATION")
-    print("=" * 60)
-
-    print(
-        f"Numerical features:   "
-        f"{len(numerical_features)}"
-    )
-
-    print(
-        f"Categorical features: "
-        f"{len(categorical_features)}"
-    )
-
-    numerical_pipeline = Pipeline(
-        steps=[
-            (
-                "imputer",
-                SimpleImputer(
-                    strategy="median"
-                ),
-            ),
-            (
-                "scaler",
-                StandardScaler(),
-            ),
-        ]
-    )
-
-    categorical_pipeline = Pipeline(
-        steps=[
-            (
-                "imputer",
-                SimpleImputer(
-                    strategy="most_frequent"
-                ),
-            ),
-            (
-                "encoder",
-                OneHotEncoder(
-                    handle_unknown="ignore",
-                    sparse_output=True,
-                ),
-            ),
-        ]
-    )
-
-    transformers = []
-
-    if numerical_features:
-
-        transformers.append(
-            (
-                "numerical",
-                numerical_pipeline,
-                numerical_features,
-            )
-        )
-
-    if categorical_features:
-
-        transformers.append(
-            (
-                "categorical",
-                categorical_pipeline,
-                categorical_features,
-            )
-        )
-
-    if not transformers:
-
-        raise ValueError(
-            "No usable features found."
-        )
-
-    return ColumnTransformer(
-        transformers=transformers,
-        remainder="drop",
-    )
-
-
-# ============================================================
-# BUILD MODEL
-# ============================================================
-
-def build_model(
-    X: pd.DataFrame,
-):
-    """
-    Build preprocessing + classification pipeline.
-
-    Logistic Regression provides a strong baseline for
-    multi-class symptom classification and supports
-    probability estimates.
-    """
-
-    preprocessor = build_preprocessor(X)
-
-    classifier = LogisticRegression(
-        max_iter=3000,
-        class_weight="balanced",
-        solver="lbfgs",
-        random_state=RANDOM_STATE,
-    )
-
-    model = Pipeline(
-        steps=[
-            (
-                "preprocessor",
-                preprocessor,
-            ),
-            (
-                "classifier",
-                classifier,
-            ),
-        ]
-    )
-
-    return model
-
-
-# ============================================================
 # TRAIN MODEL
 # ============================================================
 
-def train_model(
-    data_path: str = DATA_PATH,
-    target_column: str = TARGET_COLUMN,
-    model_path: str = MODEL_PATH,
-):
-    """Train, evaluate and save the model."""
+def train_model():
 
-    X, y = load_dataset(
-        data_path,
-        target_column,
-    )
-
-    # --------------------------------------------------------
-    # Stratified train/test split
-    # --------------------------------------------------------
+    X, y = load_dataset()
 
     X_train, X_test, y_train, y_test = (
         train_test_split(
@@ -325,206 +124,153 @@ def train_model(
             y,
             test_size=TEST_SIZE,
             random_state=RANDOM_STATE,
-            stratify=y,
+            stratify=y
         )
     )
 
-    print("\n" + "=" * 60)
-    print("TRAIN / TEST SPLIT")
-    print("=" * 60)
+    model = Pipeline(
+        steps=[
+            (
+                "scaler",
+                StandardScaler()
+            ),
 
-    print(
-        f"Training samples: {len(X_train):,}"
+            (
+                "classifier",
+                LogisticRegression(
+                    max_iter=5000,
+                    class_weight="balanced",
+                    solver="lbfgs",
+                    random_state=RANDOM_STATE
+                )
+            )
+        ]
     )
 
-    print(
-        f"Testing samples:  {len(X_test):,}"
-    )
-
-    # --------------------------------------------------------
-    # Build model
-    # --------------------------------------------------------
-
-    model = build_model(
-        X_train
-    )
-
-    print("\nTraining model...")
+    print()
+    print("Training MedBuddy model...")
 
     model.fit(
         X_train,
-        y_train,
+        y_train
     )
 
-    print("Training complete.")
+    print(
+        "Training completed."
+    )
 
-    # --------------------------------------------------------
-    # Predictions
-    # --------------------------------------------------------
+    # ========================================================
+    # EVALUATION
+    # ========================================================
 
-    y_pred = model.predict(
+    predictions = model.predict(
         X_test
     )
 
-    # --------------------------------------------------------
-    # Metrics
-    # --------------------------------------------------------
-
     accuracy = accuracy_score(
         y_test,
-        y_pred,
+        predictions
     )
 
     precision = precision_score(
         y_test,
-        y_pred,
+        predictions,
         average="macro",
-        zero_division=0,
+        zero_division=0
     )
 
     recall = recall_score(
         y_test,
-        y_pred,
+        predictions,
         average="macro",
-        zero_division=0,
+        zero_division=0
     )
 
-    macro_f1 = f1_score(
+    f1 = f1_score(
         y_test,
-        y_pred,
+        predictions,
         average="macro",
-        zero_division=0,
+        zero_division=0
     )
 
-    weighted_f1 = f1_score(
-        y_test,
-        y_pred,
-        average="weighted",
-        zero_division=0,
-    )
-
-    print("\n" + "=" * 60)
+    print()
+    print("=" * 60)
     print("MODEL PERFORMANCE")
     print("=" * 60)
 
     print(
-        f"Accuracy:        {accuracy:.4f}"
+        f"Accuracy : {accuracy:.4f}"
     )
 
     print(
-        f"Macro Precision: {precision:.4f}"
+        f"Precision: {precision:.4f}"
     )
 
     print(
-        f"Macro Recall:    {recall:.4f}"
+        f"Recall   : {recall:.4f}"
     )
 
     print(
-        f"Macro F1:        {macro_f1:.4f}"
+        f"F1 Score : {f1:.4f}"
     )
 
-    print(
-        f"Weighted F1:     {weighted_f1:.4f}"
-    )
-
-    # --------------------------------------------------------
-    # Classification report
-    # --------------------------------------------------------
-
-    print("\n" + "=" * 60)
-    print("CLASSIFICATION REPORT")
-    print("=" * 60)
-
+    print()
     print(
         classification_report(
             y_test,
-            y_pred,
-            zero_division=0,
+            predictions,
+            zero_division=0
         )
     )
 
-    # --------------------------------------------------------
-    # Confusion matrix
-    # --------------------------------------------------------
-
-    print("\n" + "=" * 60)
-    print("CONFUSION MATRIX")
-    print("=" * 60)
-
-    print(
-        confusion_matrix(
-            y_test,
-            y_pred,
-        )
-    )
-
-    # --------------------------------------------------------
-    # ROC-AUC
-    # --------------------------------------------------------
-
-    try:
-
-        probabilities = (
-            model.predict_proba(
-                X_test
-            )
-        )
-
-        if len(model.classes_) == 2:
-
-            auc = roc_auc_score(
-                y_test,
-                probabilities[:, 1],
-            )
-
-        else:
-
-            auc = roc_auc_score(
-                y_test,
-                probabilities,
-                multi_class="ovr",
-                average="macro",
-            )
-
-        print(
-            f"\nMacro ROC-AUC: {auc:.4f}"
-        )
-
-    except Exception as error:
-
-        print(
-            f"\nROC-AUC unavailable: "
-            f"{error}"
-        )
-
-    # --------------------------------------------------------
-    # Save model
-    # --------------------------------------------------------
+    # ========================================================
+    # SAVE COMPLETE ARTIFACT
+    # ========================================================
 
     artifact = {
+
         "model": model,
-        "target_column": target_column,
-        "classes": list(
-            model.classes_
-        ),
-        "feature_columns": list(
-            X.columns
-        ),
+
+        "feature_columns":
+            list(X.columns),
+
+        "classes":
+            list(model.classes_),
+
         "confidence_threshold":
             CONFIDENCE_THRESHOLD,
+
+        "metrics": {
+
+            "accuracy":
+                float(accuracy),
+
+            "precision":
+                float(precision),
+
+            "recall":
+                float(recall),
+
+            "f1":
+                float(f1)
+        },
+
+        "version":
+            "medbuddy_v2"
     }
 
     joblib.dump(
         artifact,
-        model_path,
+        MODEL_PATH
     )
 
-    print("\n" + "=" * 60)
+    print()
+    print("=" * 60)
     print("MODEL SAVED")
     print("=" * 60)
 
     print(
-        f"Location: {model_path}"
+        MODEL_PATH
     )
 
     return artifact
@@ -534,74 +280,90 @@ def train_model(
 # LOAD MODEL
 # ============================================================
 
-def load_model(
-    model_path: str = MODEL_PATH,
-):
-    """Load trained model."""
+def load_model():
 
     if not os.path.exists(
-        model_path
+        MODEL_PATH
     ):
-        raise FileNotFoundError(
-            f"Model not found: "
-            f"{model_path}\n\n"
-            "Run:\n"
-            "python model.py"
+        print(
+            "Model file not found."
         )
 
-    artifact = joblib.load(
-        model_path
-    )
-
-    if not isinstance(
-        artifact,
-        dict,
-    ):
-        raise ValueError(
-            "Invalid model file."
+        print(
+            "Training a new model..."
         )
 
-    return artifact
+        return train_model()
+
+    try:
+
+        artifact = joblib.load(
+            MODEL_PATH
+        )
+
+        # Verify artifact
+        if not isinstance(
+            artifact,
+            dict
+        ):
+            raise ValueError(
+                "Invalid model artifact."
+            )
+
+        if "model" not in artifact:
+            raise ValueError(
+                "Model artifact is missing 'model'."
+            )
+
+        if "feature_columns" not in artifact:
+            raise ValueError(
+                "Model artifact is missing feature columns."
+            )
+
+        return artifact
+
+    except Exception as error:
+
+        print(
+            f"Old model incompatible: {error}"
+        )
+
+        print(
+            "Retraining model..."
+        )
+
+        return train_model()
 
 
 # ============================================================
-# PREDICT
+# PREDICTION
 # ============================================================
 
 def predict_disease(
-    patient_data: dict,
-    model_path: str = MODEL_PATH,
-    top_k: int = 5,
+    patient_data,
+    model_path=MODEL_PATH,
+    top_k=5
 ):
-    """
-    Predict the most likely conditions.
 
-    Returns:
-        prediction
-        confidence
-        confidence_level
-        safe_to_predict
-        top_predictions
-        warning
-    """
+    # --------------------------------------------------------
+    # Load artifact
+    # --------------------------------------------------------
 
-    artifact = load_model(
-        model_path
-    )
+    artifact = load_model()
 
     model = artifact["model"]
 
-    expected_features = (
+    feature_columns = (
         artifact["feature_columns"]
     )
 
     threshold = artifact.get(
         "confidence_threshold",
-        CONFIDENCE_THRESHOLD,
+        CONFIDENCE_THRESHOLD
     )
 
     # --------------------------------------------------------
-    # Convert input to DataFrame
+    # Create input dataframe
     # --------------------------------------------------------
 
     patient_df = pd.DataFrame(
@@ -609,32 +371,49 @@ def predict_disease(
     )
 
     # --------------------------------------------------------
-    # Add missing features
+    # IMPORTANT:
+    # Use exactly the same features that
+    # were used during training.
     # --------------------------------------------------------
 
-    for feature in expected_features:
+    clean_df = pd.DataFrame(
+        0.0,
+        index=[0],
+        columns=feature_columns
+    )
 
-        if feature not in patient_df.columns:
+    for feature in feature_columns:
 
-            patient_df[
+        if feature in patient_df.columns:
+
+            value = patient_df.iloc[0][
                 feature
-            ] = np.nan
+            ]
+
+            try:
+
+                clean_df.loc[
+                    0,
+                    feature
+                ] = float(value)
+
+            except (
+                ValueError,
+                TypeError
+            ):
+
+                clean_df.loc[
+                    0,
+                    feature
+                ] = 0.0
 
     # --------------------------------------------------------
-    # Remove unexpected features
-    # --------------------------------------------------------
-
-    patient_df = patient_df[
-        expected_features
-    ]
-
-    # --------------------------------------------------------
-    # Probability prediction
+    # Prediction
     # --------------------------------------------------------
 
     probabilities = (
         model.predict_proba(
-            patient_df
+            clean_df
         )[0]
     )
 
@@ -642,33 +421,37 @@ def predict_disease(
         model.classes_
     )
 
-    # Sort highest → lowest
-    sorted_indices = np.argsort(
+    # --------------------------------------------------------
+    # Sort probabilities
+    # --------------------------------------------------------
+
+    indices = np.argsort(
         probabilities
     )[::-1]
 
     top_k = min(
         top_k,
-        len(classes),
+        len(indices)
     )
 
-    predictions = []
+    top_predictions = []
 
-    for index in sorted_indices[
-        :top_k
-    ]:
+    for index in indices[:top_k]:
 
-        predictions.append(
+        top_predictions.append(
             {
-                "condition": str(
-                    classes[index]
-                ),
-                "confidence": round(
-                    float(
-                        probabilities[index]
+                "condition":
+                    str(
+                        classes[index]
                     ),
-                    4,
-                ),
+
+                "confidence":
+                    round(
+                        float(
+                            probabilities[index]
+                        ),
+                        4
+                    )
             }
         )
 
@@ -676,9 +459,9 @@ def predict_disease(
     # Best prediction
     # --------------------------------------------------------
 
-    best_index = sorted_indices[0]
+    best_index = indices[0]
 
-    best_prediction = str(
+    best_condition = str(
         classes[best_index]
     )
 
@@ -687,7 +470,7 @@ def predict_disease(
     )
 
     # --------------------------------------------------------
-    # Confidence level
+    # Confidence
     # --------------------------------------------------------
 
     if confidence >= 0.75:
@@ -703,33 +486,34 @@ def predict_disease(
         confidence_level = "low"
 
     # --------------------------------------------------------
-    # Don't force low-confidence predictions
+    # Safety fallback
     # --------------------------------------------------------
 
-    safe_to_predict = (
-        confidence >= threshold
-    )
+    if confidence >= threshold:
 
-    if not safe_to_predict:
-
-        final_prediction = (
-            "Insufficient evidence"
+        prediction = (
+            best_condition
         )
+
+        safe_to_predict = True
 
     else:
 
-        final_prediction = (
-            best_prediction
+        prediction = (
+            "Insufficient evidence"
         )
 
+        safe_to_predict = False
+
     return {
+
         "prediction":
-            final_prediction,
+            prediction,
 
         "confidence":
             round(
                 confidence,
-                4,
+                4
             ),
 
         "confidence_level":
@@ -739,174 +523,17 @@ def predict_disease(
             safe_to_predict,
 
         "top_predictions":
-            predictions,
+            top_predictions,
 
         "warning":
             (
-                "This is an AI model prediction "
+                "This AI prediction is for "
+                "educational/research purposes "
                 "and is not a medical diagnosis. "
                 "Consult a qualified healthcare "
-                "professional for medical advice."
-            ),
-    }
-
-
-# ============================================================
-# FEATURE INFORMATION
-# ============================================================
-
-def get_feature_information(
-    model_path: str = MODEL_PATH,
-    top_n: int = 20,
-):
-    """
-    Show the most influential encoded features.
-
-    Useful for understanding the model.
-    """
-
-    artifact = load_model(
-        model_path
-    )
-
-    model = artifact["model"]
-
-    preprocessor = (
-        model.named_steps[
-            "preprocessor"
-        ]
-    )
-
-    classifier = (
-        model.named_steps[
-            "classifier"
-        ]
-    )
-
-    try:
-
-        feature_names = (
-            preprocessor
-            .get_feature_names_out()
-        )
-
-        coefficients = (
-            classifier.coef_
-        )
-
-        importance = np.mean(
-            np.abs(coefficients),
-            axis=0,
-        )
-
-        result = pd.DataFrame(
-            {
-                "feature":
-                    feature_names,
-
-                "importance":
-                    importance,
-            }
-        )
-
-        return (
-            result
-            .sort_values(
-                "importance",
-                ascending=False,
+                "professional."
             )
-            .head(top_n)
-        )
-
-    except Exception as error:
-
-        print(
-            f"Unable to calculate "
-            f"feature importance: {error}"
-        )
-
-        return pd.DataFrame()
-
-
-# ============================================================
-# DATASET QUALITY REPORT
-# ============================================================
-
-def dataset_quality_report(
-    data_path: str = DATA_PATH,
-    target_column: str = TARGET_COLUMN,
-):
-    """Print dataset quality information."""
-
-    if not os.path.exists(
-        data_path
-    ):
-        raise FileNotFoundError(
-            data_path
-        )
-
-    df = pd.read_csv(
-        data_path
-    )
-
-    print("\n" + "=" * 60)
-    print("DATASET QUALITY REPORT")
-    print("=" * 60)
-
-    print(
-        f"\nDataset shape: {df.shape}"
-    )
-
-    # Missing values
-    print("\nMissing values:")
-    print("-" * 60)
-
-    missing = (
-        df.isnull()
-        .sum()
-        .sort_values(
-            ascending=False
-        )
-    )
-
-    missing = missing[
-        missing > 0
-    ]
-
-    if len(missing):
-
-        print(
-            missing.to_string()
-        )
-
-    else:
-
-        print(
-            "No missing values."
-        )
-
-    # Duplicates
-    print("\nDuplicate rows:")
-    print("-" * 60)
-
-    print(
-        df.duplicated().sum()
-    )
-
-    # Target distribution
-    if target_column in df.columns:
-
-        print(
-            "\nDisease distribution:"
-        )
-
-        print("-" * 60)
-
-        print(
-            df[target_column]
-            .value_counts()
-            .to_string()
-        )
+    }
 
 
 # ============================================================
@@ -915,12 +542,14 @@ def dataset_quality_report(
 
 if __name__ == "__main__":
 
+    print()
     print(
-        "\nStarting MedBuddy AI model training..."
+        "Starting MedBuddy AI..."
     )
 
     train_model()
 
+    print()
     print(
-        "\nTraining finished successfully."
+        "MedBuddy model is ready."
     )
